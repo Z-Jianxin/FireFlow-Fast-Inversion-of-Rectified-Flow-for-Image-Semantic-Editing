@@ -11,6 +11,7 @@
 </div>
 
 ## [0] ✉️ News
+- We are delighted that our paper has been accepted for presentation at [ICML 2025](https://icml.cc/Conferences/2025).
 - I would like to thank [T8star-Aix](https://openart.ai/workflows/profile/t8star?sort=latest) for showing how to use our work on [🎬YouTube](https://www.youtube.com/watch?v=ahVCie5CO4U&ab_channel=T8star-Aix) and [哔哩哔哩 Bilibili](https://www.bilibili.com/video/BV1cqfRYVELd/?vd_source=c109104005f46c09acdbaf3b09e4bdff)～
 - I am pleased to see that @logtd has included this algorithm in ComfyUI-Fluxtapoz. For more details, please refer to [ComfyUI-Fluxtapoz](https://github.com/logtd/ComfyUI-Fluxtapoz).
 - Online demo is available at [HuggingFace Space](https://huggingface.co/spaces/MagicBag/FireFlow).
