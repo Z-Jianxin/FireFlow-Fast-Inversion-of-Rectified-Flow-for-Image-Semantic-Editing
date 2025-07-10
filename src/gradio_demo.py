@@ -8,7 +8,7 @@ from glob import iglob
 import argparse
 from einops import rearrange
 from fire import Fire
-from PIL import ExifTags, Image
+from PIL import ExifTags, Image, ImageChops
 
 
 import torch
@@ -77,13 +77,14 @@ class FluxEditor:
             torch.cuda.empty_cache()
             self.ae.encoder.to(self.device)
         
+        init_original = Image.fromarray(np.uint8(init_image))
+
         shape = init_image.shape
         new_h = shape[0] if shape[0] % 16 == 0 else shape[0] - shape[0] % 16
         new_w = shape[1] if shape[1] % 16 == 0 else shape[1] - shape[1] % 16
         init_image = init_image[:new_h, :new_w, :]
         width, height = init_image.shape[0], init_image.shape[1]
         init_image = encode(init_image, self.device, self.ae)
-        print(init_image.shape)
 
         rng = torch.Generator(device="cpu")
         opts = SamplingOptions(
@@ -184,10 +185,29 @@ class FluxEditor:
         exif_data[ExifTags.Base.Model] = self.name
         if self.add_sampling_metadata:
             exif_data[ExifTags.Base.ImageDescription] = source_prompt
-        img.save(fn, exif=exif_data, quality=95, subsampling=0)
+        # img.save(fn, exif=exif_data, quality=95, subsampling=0)
+        init_resized = init_original.convert("RGB").resize(
+            img.size,                                 # match W×H
+            resample=Image.Resampling.LANCZOS,        # high-quality down/up-sampling
+        )
+        diff = ImageChops.difference(
+            init_resized.convert("RGB"),   # make sure both are RGB
+            img.convert("RGB")
+        )
+
+        arr1 = np.array(init_resized, dtype=np.float32)
+        arr2 = np.array(img, dtype=np.float32)
+
+        # Compute L1 and L2 distances
+        mae = np.mean(np.abs(arr1 - arr2))
+        mae_median = np.median(np.abs(arr1 - arr2))
+        mse = np.mean((arr1 - arr2) ** 2)
+        mse_median = np.median((arr1 - arr2) ** 2)
+        print("L1 Distance:", mae, "median:", mae_median)
+        print("L2 Distance:", mse, "median:", mse_median)
 
         print("End Edit")
-        return img
+        return img, diff
 
 
 
@@ -229,11 +249,12 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
                     inject_step = gr.Slider(1, 15, 1, step=1, label="Number of inject steps")
                     guidance = gr.Slider(1.0, 10.0, 2, step=0.1, label="Guidance", interactive=not is_schnell)
                 output_image = gr.Image(label="Generated Image")
+                diff_image   = gr.Image(label="Difference (|input - output|)", type="pil")
 
         generate_btn.click(
             fn=editor.edit,
             inputs=[init_image, source_prompt, target_prompt, editing_strategy, num_steps, inject_step, guidance],
-            outputs=[output_image]
+            outputs=[output_image, diff_image]
         )
         
         # Add examples
@@ -263,7 +284,7 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device to use")
     parser.add_argument("--offload", action="store_true", help="Offload model to CPU when not in use")
     parser.add_argument("--share", action="store_true", help="Create a public link to your demo")
-    parser.add_argument("--port", type=int, default=41035)
+    parser.add_argument("--port", type=int, default=42035)
     args = parser.parse_args()
 
     demo = create_demo(args.name, args.device, args.offload)
