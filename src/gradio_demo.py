@@ -234,7 +234,6 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
             with gr.Column():
                 source_prompt = gr.Textbox(label="Source Prompt", value="(Optional) Describe the content of the uploaded image.")
                 target_prompt = gr.Textbox(label="Target Prompt", value="(Required) Describe the desired content of the edited image.")
-                init_image = gr.Image(label="Input Image", visible=True)
                 editing_strategy = gr.CheckboxGroup(
                     label="Editing Technique",
                     choices=['replace_v', 'add_q', 'add_k', 'add_v', 'replace_q', 'replace_k'],
@@ -242,13 +241,18 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
                     interactive=True
                 )
                 generate_btn = gr.Button("Generate")
-            
-            with gr.Column():
                 with gr.Accordion("Advanced Options", open=True):
                     num_steps = gr.Slider(1, 30, 8, step=1, label="Number of steps")
                     inject_step = gr.Slider(1, 15, 1, step=1, label="Number of inject steps")
                     guidance = gr.Slider(1.0, 10.0, 2, step=0.1, label="Guidance", interactive=not is_schnell)
+
+            with gr.Column():
+                init_image = gr.Image(label="Input Image", visible=True)
+            
+            with gr.Column():
                 output_image = gr.Image(label="Generated Image")
+
+            with gr.Column():
                 diff_image   = gr.Image(label="Difference (|input - output|)", type="pil")
 
         generate_btn.click(
