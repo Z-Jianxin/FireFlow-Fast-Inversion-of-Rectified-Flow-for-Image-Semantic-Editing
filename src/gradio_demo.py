@@ -20,6 +20,8 @@ from transformers import pipeline
 from flux.sampling import denoise_fireflow, get_schedule, prepare, unpack
 from flux.util import (configs, embed_watermark, load_ae, load_clip, load_flow_model, load_t5)
 
+from transformers import CLIPProcessor, CLIPModel
+
 @dataclass
 class SamplingOptions:
     source_prompt: str
@@ -66,7 +68,20 @@ class FluxEditor:
         self.clip.eval()
         self.ae.eval()
         self.model.eval()
-    
+        
+        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32") # it's lightweighted so it can live on CPU
+        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+    def print_clip_score(self, image, prompt):
+        clip_inputs = self.clip_processor(
+            text=[prompt,],
+            images=image,
+            return_tensors="pt",
+            padding=True,
+        )
+        clip_outputs = self.clip_model(**clip_inputs)
+        print("CLIP score: ", clip_outputs.logits_per_image.detach().item())
+
     @torch.inference_mode()
     def edit(self, init_image, source_prompt, target_prompt, editing_strategy, num_steps, inject_step, guidance):
         torch.cuda.empty_cache()
@@ -194,6 +209,15 @@ class FluxEditor:
             init_resized.convert("RGB"),   # make sure both are RGB
             img.convert("RGB")
         )
+        
+        print("target prompt vs target image: ")
+        self.print_clip_score(img, target_prompt)
+        print("target prompt vs source image: ")
+        self.print_clip_score(init_resized, target_prompt)
+        print("source prompt vs target image: ")
+        self.print_clip_score(img, source_prompt)
+        print("source prompt vs source image: ")
+        self.print_clip_score(init_resized, source_prompt)
 
         arr1 = np.array(init_resized, dtype=np.float32)
         arr2 = np.array(img, dtype=np.float32)
