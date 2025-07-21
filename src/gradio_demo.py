@@ -93,15 +93,16 @@ class FluxEditor:
         print("CLIP score: ", clip_outputs.logits_per_image.detach().item())
 
     @torch.inference_mode()
-    def edit(self, init_image, source_prompt, target_prompt, editing_strategy, num_steps, inject_step, guidance):
+    def edit(self, init_image, source_prompt, target_prompt, editing_strategy, num_steps, inject_step, guidance, seed):
         torch.cuda.empty_cache()
-        seed = None
-        
+        seed = int(seed) if seed else int(torch.Generator(device="cpu").seed())
+        torch.manual_seed(seed)
+
         if self.offload:
             self.model.cpu()
             torch.cuda.empty_cache()
             self.ae.encoder.to(self.device)
-        
+
         init_original = Image.fromarray(np.uint8(init_image))
 
         shape = init_image.shape
@@ -111,7 +112,6 @@ class FluxEditor:
         width, height = init_image.shape[0], init_image.shape[1]
         init_image = encode(init_image, self.device, self.ae)
 
-        rng = torch.Generator(device="cpu")
         opts = SamplingOptions(
             source_prompt=source_prompt,
             target_prompt=target_prompt,
@@ -121,8 +121,6 @@ class FluxEditor:
             guidance=guidance,
             seed=seed,
         )
-        if opts.seed is None:
-            opts.seed = torch.Generator(device="cpu").seed()
         
         print(f"Generating with seed {opts.seed}:\n{opts.source_prompt}")
         t0 = time.perf_counter()
@@ -161,7 +159,6 @@ class FluxEditor:
         # inversion initial noise
         with torch.no_grad():
             z, info = denoise_fireflow(self.model, **inp, timesteps=timesteps, guidance=1, inverse=True, info=info)
-        
         inp_target["img"] = z
 
         timesteps = get_schedule(opts.num_steps, inp_target["img"].shape[1], shift=(self.name != "flux-schnell"))
@@ -253,18 +250,6 @@ class FluxEditor:
 def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available() else "cpu", offload: bool = False):
     editor = FluxEditor(args)
     is_schnell = model_name == "flux-schnell"
-    
-    # Pre-defined examples
-    examples = [
-        ["gradio_examples/dog.jpg", "Photograph of a dog on the grass", "Photograph of a cat on the grass", ['replace_v'], 8, 1, 2.0],
-        ["gradio_examples/gold.jpg", "3d melting gold render", "a cat in the style of 3d melting gold render", ['replace_v'], 8, 1, 2.0],
-        ["gradio_examples/gold.jpg", "3d melting gold render", "a cat in the style of 3d melting gold render", ['replace_v'], 10, 1, 2.0],
-        ["gradio_examples/boy.jpg", "A young boy is playing with a toy airplane on the grassy front lawn of a suburban house, with a blue sky and fluffy clouds above.", "A young boy is sitting on the grassy front lawn of a suburban house, with a blue sky and fluffy clouds above.", ['replace_v'], 8, 1, 2.0],
-        ["gradio_examples/cartoon.jpg", "", "a cartoon style Albert Einstein raising his left hand", ['replace_v'], 8, 1, 2.0],
-        ["gradio_examples/cartoon.jpg", "", "a cartoon style Albert Einstein raising his left hand", ['replace_v'], 10, 1, 2.0],
-        ["gradio_examples/cartoon.jpg", "", "a cartoon style Albert Einstein raising his left hand", ['replace_v'], 15, 1, 2.0],
-        ["gradio_examples/art.jpg", "", "a vivid depiction of the Batman, featuring rich, dynamic colors,  and a blend of realistic and abstract elements with dynamic splatter art.", ['add_q'], 8, 1, 2.0],
-    ]
 
     with gr.Blocks() as demo:
         gr.Markdown(f"# FireFlow Demo (FLUX for image editing)")
@@ -284,6 +269,7 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
                     num_steps = gr.Slider(1, 30, 8, step=1, label="Number of steps")
                     inject_step = gr.Slider(1, 15, 1, step=1, label="Number of inject steps")
                     guidance = gr.Slider(1.0, 10.0, 2, step=0.1, label="Guidance", interactive=not is_schnell)
+                    seed = gr.Textbox(None, label="Seed")
 
             with gr.Column():
                 init_image = gr.Image(label="Input Image", visible=True)
@@ -296,24 +282,8 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
 
         generate_btn.click(
             fn=editor.edit,
-            inputs=[init_image, source_prompt, target_prompt, editing_strategy, num_steps, inject_step, guidance],
+            inputs=[init_image, source_prompt, target_prompt, editing_strategy, num_steps, inject_step, guidance, seed],
             outputs=[output_image, diff_image]
-        )
-        
-        # Add examples
-        gr.Examples(
-            examples=examples,
-            inputs=[
-                init_image, 
-                source_prompt, 
-                target_prompt, 
-                editing_strategy, 
-                num_steps, 
-                inject_step, 
-                guidance
-            ],
-            outputs=[output_image],
-            fn=editor.edit,
         )
 
 
