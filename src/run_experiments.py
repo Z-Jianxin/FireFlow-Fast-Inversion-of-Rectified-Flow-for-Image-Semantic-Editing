@@ -78,8 +78,13 @@ class MetricComputer:
 
     @staticmethod
     def pixel_distances(img1: Image.Image, img2: Image.Image) -> Tuple[float, float, float, float]:
-        a1, a2 = np.asarray(img1, np.float32), np.asarray(img2, np.float32)
-        l1, l2 = np.abs(a1 - a2), (a1 - a2) ** 2
+        a1 = np.asarray(img1, dtype=np.float32)
+        a2 = np.asarray(img2, dtype=np.float32)
+        # per‑channel difference
+        diff = a1 - a2
+        # average across the 3 channels so l1/l2 match image (H, W)
+        l1 = np.mean(np.abs(diff), axis=-1)      # shape (H, W)
+        l2 = np.mean(diff ** 2,  axis=-1)        # shape (H, W)
         return l1.mean(), np.median(l1), l2.mean(), np.median(l2)
 
 

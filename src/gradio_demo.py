@@ -212,7 +212,7 @@ class FluxEditor:
             img.size,                                 # match W×H
             resample=Image.Resampling.LANCZOS,        # high-quality down/up-sampling
         )
-        diff = ImageChops.difference(
+        diff_img = ImageChops.difference(
             init_resized.convert("RGB"),   # make sure both are RGB
             img.convert("RGB")
         )
@@ -226,16 +226,16 @@ class FluxEditor:
         print("source prompt vs source image: ")
         self.print_clip_score(init_resized, source_prompt)
 
-        arr1 = np.array(init_resized, dtype=np.float32)
-        arr2 = np.array(img, dtype=np.float32)
+        a1 = np.asarray(init_resized, dtype=np.float32)
+        a2 = np.asarray(img, dtype=np.float32)
+        # per‑channel difference
+        diff_np = a1 - a2
+        # average across the 3 channels so l1/l2 match image (H, W)
+        l1 = np.mean(np.abs(diff_np), axis=-1)      # shape (H, W)
+        l2 = np.mean(diff_np ** 2,  axis=-1)        # shape (H, W)
 
-        # Compute L1 and L2 distances
-        mae = np.mean(np.abs(arr1 - arr2))
-        mae_median = np.median(np.abs(arr1 - arr2))
-        mse = np.mean((arr1 - arr2) ** 2)
-        mse_median = np.median((arr1 - arr2) ** 2)
-        print("L1 Distance:", mae, "median:", mae_median)
-        print("L2 Distance:", mse, "median:", mse_median)
+        print("L1 Distance:", l1.mean(), "median:", np.median(l1))
+        print("L2 Distance:", l2.mean(), "median:", np.median(l2))
 
         
         with torch.no_grad():
@@ -243,7 +243,7 @@ class FluxEditor:
         print("LPIPS distance: ", dist.item())
         torch.cuda.empty_cache()
         print("End Edit\n\n")
-        return img, diff
+        return img, diff_img
 
 
 
