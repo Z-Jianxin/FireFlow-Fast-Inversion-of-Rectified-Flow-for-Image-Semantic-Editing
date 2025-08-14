@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-"""
-Run FireFlow semantic‑editing experiments defined in a JSON dataset file.
-
-The script reproduces the exact editing path of the official Gradio demo:
-  https://github.com/Black-Forest-Labs/flux  (FireFlow branch)
-
-Metrics reported per example
-  • CLIP similarity (target prompt ↔ edited image)
-  • CLIP similarity (target prompt ↔ source image) — sanity baseline
-  • LPIPS distance (edited image ↔ source image)
-  • Pixelwise L1 mean & median
-  • Pixelwise L2 mean & median
-  • Paths to edited & diff images
-
-Results are printed to stdout and also written to a CSV file.
-"""
-
 import argparse
 import csv
 import json
@@ -48,20 +30,33 @@ from flux.util import (
 )
 
 import lpips
+import timm  # NEW: for DINO features
 
 # ------------------------------------------------------------
-# 1.  Metric helpers (identical to FLUX‑SDE runner)
+# 1.  Metric helpers (CLIP-L/14@336, LPIPS, DINO-S/16)
 # ------------------------------------------------------------
 
 class MetricComputer:
     def __init__(self, device: torch.device):
         self.device = device
-        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
-        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+        # UPDATED: CLIP ViT-L/14@336
+        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14-336").to(device)
+        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
+
+        # LPIPS (unchanged behavior; runs on `device`)
         self.lpips_fn = lpips.LPIPS(net="vgg").to(device)
         self.lpips_transform = T.Compose(
             [T.Resize((1024, 1024)), T.ToTensor(), T.Normalize((0.5,), (0.5,))]
         )
+
+        # NEW: DINO-S/16 features on `device`
+        self.dino = timm.create_model("vit_small_patch16_224.dino", pretrained=True, num_classes=0).to(device).eval()
+        self.dino_transform = T.Compose([
+            T.Resize(256), T.CenterCrop(224), T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]),
+        ])
 
     @torch.inference_mode()
     def clip_similarity(self, image: Image.Image, text: str) -> float:
@@ -75,6 +70,15 @@ class MetricComputer:
         t1 = self.lpips_transform(img1).unsqueeze(0).to(self.device)
         t2 = self.lpips_transform(img2).unsqueeze(0).to(self.device)
         return self.lpips_fn(t1, t2).item()
+
+    @torch.inference_mode()
+    def dino_distance(self, img1: Image.Image, img2: Image.Image) -> float:
+        x1 = self.dino_transform(img1).unsqueeze(0).to(self.device)
+        x2 = self.dino_transform(img2).unsqueeze(0).to(self.device)
+        f1 = F.normalize(self.dino(x1), dim=1)
+        f2 = F.normalize(self.dino(x2), dim=1)
+        cos_sim = F.cosine_similarity(f1, f2).item()
+        return 1.0 - float(cos_sim)
 
     @staticmethod
     def pixel_distances(img1: Image.Image, img2: Image.Image) -> Tuple[float, float, float, float]:
@@ -105,7 +109,7 @@ class SamplingOptions:
 @torch.inference_mode()
 def encode(init_image, torch_device, ae):
     init_image = torch.from_numpy(init_image).permute(2, 0, 1).float() / 127.5 - 1
-    init_image = init_image.unsqueeze(0) 
+    init_image = init_image.unsqueeze(0)
     init_image = init_image.to(torch_device)
     with torch.no_grad():
         init_image = ae.encode(init_image.to()).to(torch.bfloat16)
@@ -137,16 +141,6 @@ class FluxEditor:
         self.ae.eval()
         self.model.eval()
 
-    def print_clip_score(self, image, prompt):
-        clip_inputs = self.clip_processor(
-            text=[prompt,],
-            images=image,
-            return_tensors="pt",
-            padding=True,
-        )
-        clip_outputs = self.clip_model(**clip_inputs)
-        print("CLIP score: ", clip_outputs.logits_per_image.detach().item())
-
     @torch.inference_mode()
     def edit(self, init_image, source_prompt, target_prompt, editing_strategy, num_steps, inject_step, guidance, seed):
         torch.cuda.empty_cache()
@@ -174,7 +168,7 @@ class FluxEditor:
             guidance=guidance,
             seed=seed,
         )
-        
+
         print(f"Generating with seed {opts.seed}:\n{opts.source_prompt}")
         t0 = time.perf_counter()
 
@@ -212,7 +206,6 @@ class FluxEditor:
         # inversion initial noise
         with torch.no_grad():
             z, info = denoise_fireflow(self.model, **inp, timesteps=timesteps, guidance=1, inverse=True, info=info)
-        # print(info['feature']['1.0_True_37_single_V'].sum())
         inp_target["img"] = z
 
         timesteps = get_schedule(opts.num_steps, inp_target["img"].shape[1], shift=(self.name != "flux-schnell"))
@@ -303,12 +296,14 @@ def run_edit(
     m_clip_edit = metric.clip_similarity(edited,        target_prompt)
     m_clip_src  = metric.clip_similarity(init_pil,      target_prompt)
     m_lpips     = metric.lpips_distance(init_pil,       edited)
+    m_dino      = metric.dino_distance(init_pil.resize(edited.size, Image.Resampling.LANCZOS), edited)
     l1_mean, l1_med, l2_mean, l2_med = metric.pixel_distances(init_pil.resize(edited.size), edited)
 
     return {
         "clip_target_edit": m_clip_edit,
         "clip_target_src":  m_clip_src,
         "lpips":            m_lpips,
+        "dino":             m_dino,
         "l1_mean":          l1_mean,
         "l1_median":        l1_med,
         "l2_mean":          l2_mean,
@@ -331,8 +326,8 @@ def parse_args():
     p.add_argument("--offload", action="store_true", help="Keep large weights on CPU when possible")
 
     # experiment hyper‑params (Gradio defaults)
-    p.add_argument("--num_steps",     type=int,   default=8)
-    p.add_argument("--inject_step",   type=int,   default=1)
+    p.add_argument("--num_steps",     type=int,   default=28)
+    p.add_argument("--inject_step",   type=int,   default=4)
     p.add_argument("--guidance",      type=float, default=2.0)
     p.add_argument(
         "--editing_strategy",
