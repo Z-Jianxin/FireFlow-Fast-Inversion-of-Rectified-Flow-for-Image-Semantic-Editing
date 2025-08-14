@@ -27,6 +27,19 @@ import torchvision.transforms as transforms
 
 import timm
 
+import csv
+import os
+
+
+csv_file = "/lambda/nfs/DISK0/experiments/logs.tsv"
+
+# If file doesn't exist yet, write the header
+if not os.path.exists(csv_file):
+    with open(csv_file, mode='w', newline='') as f:
+        writer = csv.writer(f, delimiter='\t')
+        writer.writerow(["seed", "target image clip", "source image clip", "L1 distance", "L2 distance", "LPIPS", "DINO"])
+
+
 @dataclass
 class SamplingOptions:
     source_prompt: str
@@ -107,7 +120,9 @@ class FluxEditor:
             padding=True,
         )
         clip_outputs = self.clip_model(**clip_inputs)
-        print("CLIP score: ", clip_outputs.logits_per_image.detach().item())
+        clip_score = clip_outputs.logits_per_image.detach().item()
+        print("CLIP score: ", clip_score)
+        return clip_score
 
     @torch.inference_mode()
     def edit(self, init_image, source_prompt, target_prompt, editing_strategy, num_steps, inject_step, guidance, seed):
@@ -233,39 +248,55 @@ class FluxEditor:
             init_resized.convert("RGB"),   # make sure both are RGB
             img.convert("RGB")
         )
-        
-        print("target prompt vs target image: ")
-        self.print_clip_score(img, target_prompt)
+        edited_image = img
+
+        print("\ntarget prompt vs target image: ")
+        target_clip = self.print_clip_score(edited_image, target_prompt)
         print("target prompt vs source image: ")
-        self.print_clip_score(init_resized, target_prompt)
+        source_clip = self.print_clip_score(init_resized, target_prompt)
         print("source prompt vs target image: ")
-        self.print_clip_score(img, source_prompt)
+        self.print_clip_score(edited_image, source_prompt)
         print("source prompt vs source image: ")
         self.print_clip_score(init_resized, source_prompt)
 
         a1 = np.asarray(init_resized, dtype=np.float32)
-        a2 = np.asarray(img, dtype=np.float32)
+        a2 = np.asarray(edited_image, dtype=np.float32)
         # per‑channel difference
         diff_np = a1 - a2
         # average across the 3 channels so l1/l2 match image (H, W)
         l1 = np.mean(np.abs(diff_np), axis=-1)      # shape (H, W)
         l2 = np.mean(diff_np ** 2,  axis=-1)        # shape (H, W)
+        l1_mean = l1.mean()
+        l2_mean = l2.mean()
 
-        print("L1 Distance:", l1.mean(), "median:", np.median(l1))
-        print("L2 Distance:", l2.mean(), "median:", np.median(l2))
-
+        print("L1 Distance:", l1_mean, "median:", np.median(l1))
+        print("L2 Distance:", l2_mean, "median:", np.median(l2))
         
         with torch.no_grad():
-            dist = self.lpips(self.lpips_transform(init_resized).to("cuda"), self.lpips_transform(img).to("cuda"))
-        print("LPIPS distance: ", dist.item())
+            lpips_dist = self.lpips(self.lpips_transform(init_resized).to("cuda"), self.lpips_transform(edited_image).to("cuda")).item()
+        print("LPIPS distance: ", lpips_dist)
         
         with torch.no_grad():
-            dist = self.dino_dist(init_resized, img)
-        print("DINO distance: ", 1.0-dist)
+            dino_sim = self.dino_dist(init_resized, edited_image)
+            dino_dist = 1 - dino_sim
+        print("DINO distance: ", dino_dist)
 
         torch.cuda.empty_cache()
         print("End Edit\n\n")
-        return img, diff_img
+        
+        # Append the new row
+        with open(csv_file, mode='a', newline='') as f:
+            writer = csv.writer(f, delimiter='\t')
+            writer.writerow([
+                int(seed),
+                f"{target_clip:.8f}",
+                f"{source_clip:.8f}",
+                f"{l1_mean:.8f}",
+                f"{l2_mean:.8f}",
+                f"{lpips_dist:.8f}",
+                f"{dino_dist:.8f}"
+            ])
+        return edited_image, diff_img
 
 
 
